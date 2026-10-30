@@ -11,6 +11,7 @@ def test_placeholder_examples_are_rejected():
     assert is_placeholder_secret('demo') is True
     assert is_placeholder_secret('your_api_key') is True
     assert is_placeholder_secret('sk-test-12345') is True
+    assert is_placeholder_secret('api03') is True
     assert is_placeholder_secret('OPENAI_API_KEY=demo') is True
 
 
@@ -18,6 +19,7 @@ def test_docs_and_examples_are_excluded():
     assert is_excluded_path('README.md') is True
     assert is_excluded_path('docs/setup.md') is True
     assert is_excluded_path('examples/sample.env') is True
+    assert is_excluded_path('js/help-system.js') is True
     assert is_excluded_path('src/app.py') is False
 
 
@@ -57,3 +59,13 @@ def test_valid_anthropic_key_is_accepted():
     provider, confidence = result
     assert provider == 'anthropic'
     assert confidence >= 60
+
+
+def test_keys_outside_provider_length_bounds_are_rejected():
+    long_secret = 'sk-ant-' + 'X' * 500
+    result = score_secret(long_secret, 'ANTHROPIC_API_KEY', 'src/.env')
+    assert result is None
+
+    short_secret = 'sk-proj-' + 'A' * 10
+    result = score_secret(short_secret, 'OPENAI_API_KEY', 'src/.env')
+    assert result is None

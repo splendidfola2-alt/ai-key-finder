@@ -28,12 +28,17 @@ from urllib3.util.retry import Retry
 PLACEHOLDER_TOKENS = (
     'demo', 'example', 'sample', 'placeholder', 'replace_me', 'your_api_key',
     'your_key', 'changeme', 'dummy', 'fake', 'test', 'testing', 'sample_key',
-    'sk-test', 'sk-example', 'sk-demo', 'api_key', 'apikey'
+    'sk-test', 'sk-example', 'sk-demo', 'api_key', 'apikey', 'api03', 'api04', 'api05'
+)
+
+NEGATIVE_VALUE_PATTERNS = (
+    r'(?i)(demo|example|sample|placeholder|test|fake|dummy|changeme|mock|api03|api04|api05|replace_me)'
 )
 
 EXCLUDED_PATH_PATTERNS = (
     '/docs/', '/doc/', '/examples/', '/example/', '/tests/', '/test/',
     '/fixtures/', '/samples/', '/mock/', '/mocks/', '/templates/',
+    '/help/', '/helpers/', '/demo/', '/sample/',
     '.env.example', '.example', '.sample', '.template', 'README',
 )
 
@@ -41,42 +46,52 @@ PROVIDER_RULES = {
     'openai-proj': {
         'regex': re.compile(r'^sk-proj-[A-Za-z0-9_-]{48,}$'),
         'min_length': 48,
+        'max_length': 256,
     },
     'openai-legacy': {
         'regex': re.compile(r'^sk-[A-Za-z0-9]{48,}$'),
         'min_length': 48,
+        'max_length': 256,
     },
     'anthropic': {
         'regex': re.compile(r'^sk-ant-[A-Za-z0-9_-]{80,}$'),
         'min_length': 80,
+        'max_length': 256,
     },
     'gemini': {
         'regex': re.compile(r'^AIza[0-9A-Za-z\-_]{35}$'),
         'min_length': 39,
+        'max_length': 100,
     },
     'groq': {
         'regex': re.compile(r'^gsk_[A-Za-z0-9_-]{20,}$'),
         'min_length': 20,
+        'max_length': 128,
     },
     'huggingface': {
         'regex': re.compile(r'^(?:hf_[A-Za-z0-9_\-]{20,}|huggingfacehub_[A-Za-z0-9_\-]{20,})$'),
         'min_length': 20,
+        'max_length': 256,
     },
     'deepseek': {
         'regex': re.compile(r'^sk-[A-Za-z0-9_-]{20,}$'),
         'min_length': 20,
+        'max_length': 256,
     },
     'azure-openai': {
         'regex': re.compile(r'^[A-Za-z0-9._-]{30,}$'),
         'min_length': 30,
+        'max_length': 200,
     },
     'mistral': {
         'regex': re.compile(r'^[A-Za-z0-9_-]{32,}$'),
         'min_length': 32,
+        'max_length': 256,
     },
     'perplexity': {
         'regex': re.compile(r'^[A-Za-z0-9_-]{32,}$'),
         'min_length': 32,
+        'max_length': 256,
     },
 }
 
@@ -117,7 +132,7 @@ def is_placeholder_secret(value: str) -> bool:
         return True
     if any(token in val for token in PLACEHOLDER_TOKENS):
         return True
-    if re.search(r'(?i)(demo|example|sample|placeholder|test|fake|dummy|replace_me|changeme)', val):
+    if re.search(NEGATIVE_VALUE_PATTERNS[0], val):
         return True
     return False
 
@@ -128,6 +143,8 @@ def is_excluded_path(file_path: str) -> bool:
         if token.lower() in lower:
             return True
     if lower.endswith(('.env.example', '.sample', '.template')):
+        return True
+    if re.search(r'(?i)(/help/|/demo/|/sample/|/examples/|/tests/|/mock/|/fixtures/)', lower):
         return True
     return False
 
@@ -194,7 +211,7 @@ def validate_secret_format(secret: str, provider: Optional[str]) -> bool:
     rules = PROVIDER_RULES.get(provider)
     if not rules:
         return False
-    if len(value) < rules['min_length']:
+    if len(value) < rules['min_length'] or len(value) > rules['max_length']:
         return False
 
     return bool(rules['regex'].fullmatch(value))
@@ -341,7 +358,7 @@ class GitHubScanner:
 
         return findings
 
-    def fetch_file_contents(self, item: Dict[str, Any]) -> Optional[Tuple[str, str, str, Optional[str]]]:
+    def fetch_file_contents(self, item: Dict[str, Any]) -> Optional[Tuple[str, str, str, Optional[str], str]]:
         """Download a single matched file only (no repo tarball)."""
         if not self._check_budget():
             return None
@@ -574,7 +591,7 @@ This tool is intentionally conservative. It prefers low false positives over bro
 ## How this project reduces false positives
 
 - Identifies likely provider and exact issuer prefix
-- Validates against provider-specific secret formats
+- Validates against provider-specific secret formats and length bounds
 - Rejects known placeholder/demo/test values
 - Ignores docs/examples/tests/fixtures paths
 - Applies a confidence scoring threshold before reporting a hit
