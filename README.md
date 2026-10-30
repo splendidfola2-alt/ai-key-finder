@@ -26,7 +26,13 @@ This project is designed to monitor publicly visible GitHub repositories for lik
 - Mistral
 - Perplexity
 
-## Run
+## Local POC test
+
+```bash
+python -m pytest -q
+```
+
+## Run the scanner
 
 ```bash
 pip install -r requirements.txt
