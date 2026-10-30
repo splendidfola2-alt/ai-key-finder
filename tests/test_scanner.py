@@ -4,6 +4,7 @@ from scanner import (
     is_placeholder_secret,
     is_excluded_path,
     score_secret,
+    has_repeated_pattern,
 )
 
 
@@ -12,7 +13,14 @@ def test_placeholder_examples_are_rejected():
     assert is_placeholder_secret('your_api_key') is True
     assert is_placeholder_secret('sk-test-12345') is True
     assert is_placeholder_secret('api03') is True
+    assert is_placeholder_secret('mock-key') is True
     assert is_placeholder_secret('OPENAI_API_KEY=demo') is True
+
+
+def test_repeated_pattern_is_rejected():
+    assert has_repeated_pattern('aaaaaaa') is True
+    assert has_repeated_pattern('ABABABABAB') is True
+    assert has_repeated_pattern('abc123xyz') is False
 
 
 def test_docs_and_examples_are_excluded():
@@ -69,3 +77,7 @@ def test_keys_outside_provider_length_bounds_are_rejected():
     short_secret = 'sk-proj-' + 'A' * 10
     result = score_secret(short_secret, 'OPENAI_API_KEY', 'src/.env')
     assert result is None
+
+
+def test_weak_placeholder_like_api03_is_rejected():
+    assert is_placeholder_secret('sk-ant-api03xyzabc') is True

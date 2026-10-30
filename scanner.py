@@ -7,6 +7,7 @@ This version is intentionally conservative and optimized for a POC:
 - it scans only the files returned by the GitHub search results
 - it validates the provider-specific key pattern before reporting
 - it excludes docs/examples/tests and rejects placeholders/demo values
+- it applies strict provider-specific length checks and suspicious pattern guards
 """
 
 import os
@@ -28,7 +29,8 @@ from urllib3.util.retry import Retry
 PLACEHOLDER_TOKENS = (
     'demo', 'example', 'sample', 'placeholder', 'replace_me', 'your_api_key',
     'your_key', 'changeme', 'dummy', 'fake', 'test', 'testing', 'sample_key',
-    'sk-test', 'sk-example', 'sk-demo', 'api_key', 'apikey', 'api03', 'api04', 'api05'
+    'sk-test', 'sk-example', 'sk-demo', 'api_key', 'apikey', 'api03', 'api04', 'api05',
+    'mock', 'mock_key', 'mock_api', 'your-key', 'secret-key', 'token-key'
 )
 
 NEGATIVE_VALUE_PATTERNS = (
@@ -37,8 +39,8 @@ NEGATIVE_VALUE_PATTERNS = (
 
 EXCLUDED_PATH_PATTERNS = (
     '/docs/', '/doc/', '/examples/', '/example/', '/tests/', '/test/',
-    '/fixtures/', '/samples/', '/mock/', '/mocks/', '/templates/',
-    '/help/', '/helpers/', '/demo/', '/sample/',
+    '/fixtures/', '/samples/', '/sample/', '/mock/', '/mocks/', '/templates/',
+    '/help/', '/helpers/', '/demo/', '/sandbox/', '/examples/', '/docs/',
     '.env.example', '.example', '.sample', '.template', 'README',
 )
 
@@ -114,7 +116,6 @@ RAW_KEY_PATTERN = re.compile(
     r'|AIza[0-9A-Za-z\-_]{35}'
     r'|hf_[A-Za-z0-9_\-]{20,}'
     r'|huggingfacehub_[A-Za-z0-9_\-]{20,}'
-    r'|sk-[A-Za-z0-9_-]{20,}'
     r')(?!(?:[A-Za-z0-9_-]))'
 )
 
@@ -126,6 +127,18 @@ def normalize_secret_value(value: str) -> str:
     return cleaned.rstrip(';').rstrip(',').strip()
 
 
+def has_repeated_pattern(value: str) -> bool:
+    if not value:
+        return True
+    if re.fullmatch(r'(.)\1{8,}', value):
+        return True
+    if re.fullmatch(r'([A-Za-z0-9])\1{12,}', value):
+        return True
+    if re.search(r'(?:[A-Za-z0-9])\1{5,}', value):
+        return True
+    return False
+
+
 def is_placeholder_secret(value: str) -> bool:
     val = value.lower()
     if not val:
@@ -133,6 +146,10 @@ def is_placeholder_secret(value: str) -> bool:
     if any(token in val for token in PLACEHOLDER_TOKENS):
         return True
     if re.search(NEGATIVE_VALUE_PATTERNS[0], val):
+        return True
+    if has_repeated_pattern(val):
+        return True
+    if re.search(r'(?i)(?:^|[^A-Za-z])(demo|temp|sample|test|mock|fake|dummy|placeholder)(?:$|[^A-Za-z])', val):
         return True
     return False
 
@@ -144,7 +161,7 @@ def is_excluded_path(file_path: str) -> bool:
             return True
     if lower.endswith(('.env.example', '.sample', '.template')):
         return True
-    if re.search(r'(?i)(/help/|/demo/|/sample/|/examples/|/tests/|/mock/|/fixtures/)', lower):
+    if re.search(r'(?i)(/help/|/demo/|/sample/|/examples/|/tests/|/mock/|/fixtures/|/sandbox/)', lower):
         return True
     return False
 
@@ -206,6 +223,8 @@ def validate_secret_format(secret: str, provider: Optional[str]) -> bool:
     if not value:
         return False
     if is_placeholder_secret(value):
+        return False
+    if has_repeated_pattern(value):
         return False
 
     rules = PROVIDER_RULES.get(provider)
@@ -591,8 +610,8 @@ This tool is intentionally conservative. It prefers low false positives over bro
 ## How this project reduces false positives
 
 - Identifies likely provider and exact issuer prefix
-- Validates against provider-specific secret formats and length bounds
-- Rejects known placeholder/demo/test values
+- Validates against provider-specific secret formats and strict length bounds
+- Rejects known placeholder/demo/test values and repeated/simple patterns
 - Ignores docs/examples/tests/fixtures paths
 - Applies a confidence scoring threshold before reporting a hit
 - Scans only files returned by GitHub search results instead of downloading full repos
