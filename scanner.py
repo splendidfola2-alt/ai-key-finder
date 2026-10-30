@@ -33,9 +33,7 @@ PLACEHOLDER_TOKENS = (
     'mock', 'mock_key', 'mock_api', 'your-key', 'secret-key', 'token-key'
 )
 
-NEGATIVE_VALUE_PATTERNS = (
-    r'(?i)(demo|example|sample|placeholder|test|fake|dummy|changeme|mock|api03|api04|api05|replace_me)'
-)
+NEGATIVE_VALUE_PATTERNS = r'(?i)(demo|example|sample|placeholder|test|fake|dummy|changeme|mock|api03|api04|api05|replace_me)'
 
 EXCLUDED_PATH_PATTERNS = (
     '/docs/', '/doc/', '/examples/', '/example/', '/tests/', '/test/',
@@ -145,7 +143,7 @@ def is_placeholder_secret(value: str) -> bool:
         return True
     if any(token in val for token in PLACEHOLDER_TOKENS):
         return True
-    if re.search(NEGATIVE_VALUE_PATTERNS[0], val):
+    if re.search(NEGATIVE_VALUE_PATTERNS, val):
         return True
     if has_repeated_pattern(val):
         return True
