@@ -2,15 +2,11 @@
 """
 High-confidence AI API Key Exposure Scanner
 
-This tool scans public GitHub content for high-confidence AI API key leaks.
-It intentionally avoids noisy keyword-only matches and instead validates
-provider-specific formats, excludes docs/examples/test fixtures, and rejects
-placeholder/demo values.
-
-IMPORTANT:
-- Security research only.
-- Does not store actual keys.
-- Records metadata only.
+This version is intentionally conservative and optimized for a POC:
+- it does NOT download full repo tarballs
+- it scans only the files returned by the GitHub search results
+- it validates the provider-specific key pattern before reporting
+- it excludes docs/examples/tests and rejects placeholders/demo values
 """
 
 import os
@@ -45,52 +41,42 @@ PROVIDER_RULES = {
     'openai-proj': {
         'regex': re.compile(r'^sk-proj-[A-Za-z0-9_-]{48,}$'),
         'min_length': 48,
-        'env_keys': ('OPENAI_API_KEY', 'CODEX_API_KEY', 'CHATGPT_API_KEY', 'GPT_API_KEY', 'GPT3_API_KEY', 'GPT4_API_KEY', 'GPT35_API_KEY', 'DALLE_API_KEY', 'AI_API_KEY', 'LLM_API_KEY', 'LANGUAGE_MODEL_API_KEY')
     },
     'openai-legacy': {
         'regex': re.compile(r'^sk-[A-Za-z0-9]{48,}$'),
         'min_length': 48,
-        'env_keys': ('OPENAI_API_KEY', 'CODEX_API_KEY', 'CHATGPT_API_KEY', 'GPT_API_KEY', 'GPT3_API_KEY', 'GPT4_API_KEY', 'GPT35_API_KEY', 'DALLE_API_KEY', 'AI_API_KEY', 'LLM_API_KEY', 'LANGUAGE_MODEL_API_KEY')
     },
     'anthropic': {
         'regex': re.compile(r'^sk-ant-[A-Za-z0-9_-]{80,}$'),
         'min_length': 80,
-        'env_keys': ('ANTHROPIC_API_KEY', 'CLAUDE_API_KEY')
     },
     'gemini': {
         'regex': re.compile(r'^AIza[0-9A-Za-z\-_]{35}$'),
         'min_length': 39,
-        'env_keys': ('GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_CREDENTIALS')
     },
     'groq': {
         'regex': re.compile(r'^gsk_[A-Za-z0-9_-]{20,}$'),
         'min_length': 20,
-        'env_keys': ('GROQ_API_KEY',)
     },
     'huggingface': {
         'regex': re.compile(r'^(?:hf_[A-Za-z0-9_\-]{20,}|huggingfacehub_[A-Za-z0-9_\-]{20,})$'),
         'min_length': 20,
-        'env_keys': ('HUGGINGFACE_API_KEY', 'HF_API_KEY')
     },
     'deepseek': {
         'regex': re.compile(r'^sk-[A-Za-z0-9_-]{20,}$'),
         'min_length': 20,
-        'env_keys': ('DEEPSEEK_API_KEY',)
     },
     'azure-openai': {
         'regex': re.compile(r'^[A-Za-z0-9._-]{30,}$'),
         'min_length': 30,
-        'env_keys': ('AZURE_OPENAI_API_KEY',)
     },
     'mistral': {
         'regex': re.compile(r'^[A-Za-z0-9_-]{32,}$'),
         'min_length': 32,
-        'env_keys': ('MISTRAL_API_KEY',)
     },
     'perplexity': {
         'regex': re.compile(r'^[A-Za-z0-9_-]{32,}$'),
         'min_length': 32,
-        'env_keys': ('PERPLEXITY_API_KEY', 'PPLX_API_KEY')
     },
 }
 
@@ -238,7 +224,6 @@ def score_secret(value: str, env_var_name: Optional[str], file_path: str) -> Opt
 
 @dataclass
 class ExposedKeyFinding:
-    """Represents a high-confidence API key exposure."""
     repository: str
     file_path: str
     file_url: str
@@ -256,7 +241,6 @@ class GitHubScanner:
     JITTER_RANGE = (0, 1)
     MAX_REQUESTS_PER_SCAN = 10
     MAX_PAGES = 1
-    MAX_FILES_PER_QUERY = 30
 
     def __init__(self, token: str):
         self.token = token
@@ -278,7 +262,7 @@ class GitHubScanner:
             total=2,
             backoff_factor=3,
             status_forcelist=[429, 500, 502, 503, 504],
-            respect_retry_after_header=True
+            respect_retry_after_header=True,
         )
         adapter = HTTPAdapter(max_retries=retry_strategy)
         session.mount('https://', adapter)
@@ -287,8 +271,7 @@ class GitHubScanner:
 
     def _wait_if_needed(self):
         jitter = random.uniform(*self.JITTER_RANGE)
-        delay = self.RATE_LIMIT_DELAY + jitter
-        time.sleep(delay)
+        time.sleep(self.RATE_LIMIT_DELAY + jitter)
 
     def _check_budget(self) -> bool:
         if self.requests_made >= self.MAX_REQUESTS_PER_SCAN:
@@ -309,13 +292,16 @@ class GitHubScanner:
                 result = score_secret(secret, var_name, file_path)
                 if result is None:
                     continue
+
                 provider, confidence = result
                 if confidence < 60:
                     continue
+
                 key_id = (file_path, provider, secret[:24])
                 if key_id in seen:
                     continue
                 seen.add(key_id)
+
                 findings.append(ExposedKeyFinding(
                     repository=repo_name,
                     file_path=file_path,
@@ -332,13 +318,16 @@ class GitHubScanner:
             result = score_secret(secret, None, file_path)
             if result is None:
                 continue
+
             provider, confidence = result
             if confidence < 60:
                 continue
+
             key_id = (file_path, provider, secret[:24])
             if key_id in seen:
                 continue
             seen.add(key_id)
+
             findings.append(ExposedKeyFinding(
                 repository=repo_name,
                 file_path=file_path,
@@ -352,8 +341,48 @@ class GitHubScanner:
 
         return findings
 
+    def fetch_file_contents(self, item: Dict[str, Any]) -> Optional[Tuple[str, str, str, Optional[str]]]:
+        """Download a single matched file only (no repo tarball)."""
+        if not self._check_budget():
+            return None
+
+        repo_name = item.get('repository', {}).get('full_name', 'unknown')
+        file_path = item.get('path', 'unknown')
+        file_url = item.get('html_url', '')
+        contents_url = item.get('url')
+        if not contents_url:
+            return None
+
+        file_id = f"{repo_name}:{file_path}"
+        if file_id in self.analyzed_files:
+            return None
+        self.analyzed_files.add(file_id)
+
+        try:
+            response = self.session.get(contents_url, timeout=20)
+            self.requests_made += 1
+
+            if response.status_code in [403, 429]:
+                return None
+            if response.status_code != 200:
+                return None
+
+            data = response.json()
+            content = data.get('content', '')
+            if data.get('encoding') == 'base64':
+                try:
+                    decoded = base64.b64decode(content).decode('utf-8', errors='ignore')
+                except Exception:
+                    return None
+            else:
+                decoded = content
+
+            return repo_name, file_path, file_url, item.get('sha'), decoded
+        except Exception:
+            return None
+
     def search_code(self, query: str, per_page: int = 30) -> List[Dict[str, Any]]:
-        results = []
+        results: List[Dict[str, Any]] = []
         page = 1
 
         print(f'  Query: {query}')
@@ -415,58 +444,19 @@ class GitHubScanner:
 
         return results
 
-    def analyze_repo(self, repo_full_name: str) -> List[ExposedKeyFinding]:
-        if not self._check_budget():
-            return []
+    def scan_search_results(self, results: List[Dict[str, Any]]) -> List[ExposedKeyFinding]:
+        findings: List[ExposedKeyFinding] = []
 
-        findings = []
-        tarball_url = f'https://api.github.com/repos/{repo_full_name}/tarball'
+        for item in results:
+            if not self._check_budget():
+                break
 
-        try:
-            response = self.session.get(tarball_url, timeout=30, stream=True)
-            self.requests_made += 1
+            fetched = self.fetch_file_contents(item)
+            if fetched is None:
+                continue
 
-            if response.status_code in [403, 404, 429]:
-                return []
-            if response.status_code != 200:
-                return []
-
-            import tempfile
-            import tarfile
-
-            with tempfile.NamedTemporaryFile(suffix='.tar.gz', delete=False) as tmp:
-                for chunk in response.iter_content(chunk_size=8192):
-                    tmp.write(chunk)
-                tmp_path = tmp.name
-
-            try:
-                with tarfile.open(tmp_path, 'r:gz') as tar:
-                    for member in tar.getmembers():
-                        if not member.isfile():
-                            continue
-                        if member.size > 1_000_000:
-                            continue
-
-                        try:
-                            f = tar.extractfile(member)
-                            if f is None:
-                                continue
-                            content = f.read().decode('utf-8', errors='ignore')
-                            f.close()
-
-                            file_path = member.name.split('/', 1)[-1] if '/' in member.name else member.name
-                            file_url = f'https://github.com/{repo_full_name}/blob/main/{file_path}'
-                            findings.extend(self._scan_text_for_findings(content, file_path, repo_full_name, file_url, None))
-                        except Exception:
-                            continue
-            finally:
-                try:
-                    os.unlink(tmp_path)
-                except Exception:
-                    pass
-
-        except Exception:
-            pass
+            repo_name, file_path, file_url, commit_sha, content = fetched
+            findings.extend(self._scan_text_for_findings(content, file_path, repo_name, file_url, commit_sha))
 
         return findings
 
@@ -483,34 +473,17 @@ class GitHubScanner:
         return slots[current_10min_slot]
 
     def scan_for_keys(self) -> List[ExposedKeyFinding]:
-        query, query_label = self._get_query_for_this_slot()
-        all_findings = []
-
+        query, _ = self._get_query_for_this_slot()
         results = self.search_code(query, per_page=30)
         if not results:
-            return all_findings
-
-        repos_to_scan = {}
-        for item in results:
-            repo_full_name = item.get('repository', {}).get('full_name')
-            if repo_full_name:
-                repos_to_scan[repo_full_name] = item.get('repository', {})
-
-        repos_list = list(repos_to_scan.keys())[:9]
-        for repo_full_name in repos_list:
-            if self.requests_made >= 10:
-                break
-            findings = self.analyze_repo(repo_full_name)
-            if findings:
-                all_findings.extend(findings)
-
-        return all_findings
+            return []
+        return self.scan_search_results(results)
 
     def save_findings(self, findings: List[ExposedKeyFinding], output_dir: Path):
         output_dir.mkdir(parents=True, exist_ok=True)
+
         latest_file = output_dir / 'latest.json'
         existing_findings = []
-
         if latest_file.exists():
             try:
                 with open(latest_file) as f:
@@ -527,15 +500,17 @@ class GitHubScanner:
 
         timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
         output_file = output_dir / f'scan_{timestamp}.json'
+
         data = {
             'scan_timestamp': datetime.now(timezone.utc).isoformat(),
             'total_findings': len(existing_findings),
             'requests_made': self.requests_made,
-            'findings': [asdict(f) for f in existing_findings]
+            'findings': [asdict(f) for f in existing_findings],
         }
 
         with open(output_file, 'w') as f:
             json.dump(data, f, indent=2)
+
         with open(latest_file, 'w') as f:
             json.dump(data, f, indent=2)
 
@@ -603,6 +578,7 @@ This tool is intentionally conservative. It prefers low false positives over bro
 - Rejects known placeholder/demo/test values
 - Ignores docs/examples/tests/fixtures paths
 - Applies a confidence scoring threshold before reporting a hit
+- Scans only files returned by GitHub search results instead of downloading full repos
 
 ---
 
@@ -640,7 +616,5 @@ def main():
 if __name__ == '__main__':
     raise SystemExit(main())
 
-
 # License: MIT
 # This repository is for security research and awareness purposes.
-

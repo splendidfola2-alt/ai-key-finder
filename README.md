@@ -13,6 +13,7 @@ This project is designed to monitor publicly visible GitHub repositories for lik
 - Reject placeholder/test/demo strings
 - Exclude docs/examples/test fixtures
 - Only alert when the score passes a confidence threshold
+- Scan only the files returned by GitHub search results instead of downloading full repos
 
 ## Example providers handled
 
